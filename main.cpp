@@ -25,56 +25,46 @@ using namespace rapidjson;
 typedef map<string, int> CityStats;
 typedef unordered_map<string, unordered_map<string, int>> UserStats;
 
-CityStats GCC_STATS = {{"1gsyd", 0}, {"2gmel", 0}, {"3gbri", 0}, {"4gade", 0},
-                       {"5gper", 0}, {"6ghob", 0}, {"7gdar", 0}, {"8acte", 0},
-                       {"9oter", 0}};
-char JSON_OBJECT_START[] = "  {";
-int JSON_HEADER_LENGTH = strlen(JSON_OBJECT_START);
-
 struct DataHandler : public BaseReaderHandler<UTF8<>, DataHandler> {
 
-    DataHandler(Document* suburbs): city_stats_{GCC_STATS}, state_{kExpectOthers}, suburbs_{suburbs} {}
+    DataHandler(CityStats* city_stats, UserStats* user_stats, Document* suburbs):
+        city_stats_{city_stats}, user_stats_{user_stats}, suburbs_{suburbs}, state_{kExpectOthers} {}
 
-    bool Null() {return true;};
-    bool Bool(bool b) {return true;};
-    bool Int(int i) {return true;};
-    bool Uint(unsigned i) {return true;};
-    bool Int64(int64_t i) {return true;};
-    bool Uint64(uint64_t i) {return true;};
-    bool Double(double d) {return true;};
-    bool RawNumber(const Ch* str, SizeType length, bool copy) {return true;};
+    ~DataHandler() {
+        suburbs_ = nullptr;
+        user_stats_ = nullptr;
+        city_stats_ = nullptr;
+    }
+
     bool String(const Ch* str, SizeType length, bool copy) {
         switch(state_) {
-            case kExpectCityName:
-            {
-                string city_ = string(str, length);
-                city_ = city_.substr(0, city_.find(','));
-                boost::algorithm::to_lower(city_);
-                auto c_city_ = city_.c_str();
-                if(suburbs_->HasMember(c_city_)) {
-                    auto index = (*suburbs_)[c_city_].GetObject()["gcc"].GetString();
-                    if(city_stats_.find(index) != city_stats_.end()){
-                        city_stats_[index] += 1;
-                        user_stats_[curr_user_]["count"] += 1;
-                        user_stats_[curr_user_][index] += 1;
+            case kExpectCityName: {
+                string city = string(str, length);
+                city = city.substr(0, city.find(','));
+                boost::algorithm::to_lower(city);
+                auto c_city = city.c_str();
+                if(suburbs_->HasMember(c_city)) {
+                    auto index = (*suburbs_)[c_city].GetObject()["gcc"].GetString();
+                    if(city_stats_->find(index) != city_stats_->end()){
+                        (*city_stats_)[index] += 1;
+                        (*user_stats_)[curr_user_][index] += 1;
                     }
                 }
                 break;
             }
-            case kExpectUserID:
-            {
+            case kExpectUserID: {
                 curr_user_ = string(str, length);
+                (*user_stats_)[curr_user_]["count"] += 1;
                 break;
             }
-            default:
-            {
+            default: {
                 return true;
             }
         }
         state_ = kExpectOthers;
         return true;
-    };
-    bool StartObject() {return true;};
+    }
+
     bool Key(const Ch* str, SizeType length, bool copy) {
         if(strcmp(str, "author_id") == 0) {
             state_ = kExpectUserID;
@@ -82,179 +72,149 @@ struct DataHandler : public BaseReaderHandler<UTF8<>, DataHandler> {
             state_ = kExpectCityName;
         }
         return true;
-    };
-    bool EndObject(SizeType memberCount) {return true;};
-    bool StartArray() {return true;};
-    bool EndArray(SizeType elementCount) {return true;};
+    }
 
-    enum State {
-        kExpectUserID,
-        kExpectCityName,
-        kExpectOthers,
-    } state_;
+    bool Default() {return true;}
+
+    enum State {kExpectUserID, kExpectCityName, kExpectOthers} state_;
     Document* suburbs_;
-    CityStats city_stats_;
-    UserStats user_stats_;
+    CityStats* city_stats_;
+    UserStats* user_stats_;
     string curr_user_;
 };
+
+inline Document get_suburbs(const char* path) {
+    FILE* fp = fopen(path, "rb");
+    if(!fp) {
+        cerr << "Error: failed to open the file " + string(path) << endl;
+        exit(1);
+    }
+    char buffer[65536];
+    FileReadStream is(fp, buffer, sizeof(buffer));
+    Document suburbs;
+    suburbs.ParseStream(is);
+    fclose(fp);
+    return suburbs;
+}
+
+inline long long get_start_pos(const char* path, long long& file_size, int world_size, int rank) {
+    ifstream twt_file(path);
+    if(!twt_file.is_open()) {
+        cerr << "Error: failed to open the file " + string(path) << endl;
+        exit(1);
+    };
+    twt_file.seekg(0, ios::end);
+    file_size = twt_file.tellg();
+    long long chunk_size = file_size / world_size;
+    long long start_pos = chunk_size * rank;
+    twt_file.seekg(start_pos, ios::beg);
+    char buffer[1024];
+    while(twt_file.getline(buffer, 1024)) {
+        if(strcmp(buffer, "  },") == 0) break;
+    }
+    start_pos = twt_file.tellg();
+    twt_file.close();
+    return start_pos;
+}
+
+inline long long get_chunk_size(long long start_pos, long long file_size, int world_size, int rank) {
+    long long end_pos = file_size;
+    if(world_size > 1) {
+        if(rank > 0) MPI_Send(&start_pos, 1, MPI_LONG_LONG, rank-1, 0, MPI_COMM_WORLD);
+        if(rank < world_size - 1) MPI_Recv(&end_pos, 1, MPI_LONG_LONG, rank+1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    }
+    return end_pos - start_pos;
+}
+
+inline void file_stats(const char* path, long long chunk_size, long long start_pos, DataHandler& dh) {
+    FILE* twt_file = fopen(path, "rb");
+    fseeko64(twt_file, start_pos, SEEK_SET);
+    char buffer[65536];
+    FileReadStream isr(twt_file, buffer, sizeof(buffer));
+    buffer[0] = '[';
+    Reader json_reader;
+    json_reader.IterativeParseInit();
+    while(isr.Tell() < chunk_size) {
+        json_reader.IterativeParseNext<kParseDefaultFlags>(isr, dh);
+    }
+    fclose(twt_file);
+}
+
+template<typename Stats, typename F>
+inline void merge_stats(Stats& stats, int world_size, int rank, int flag, F func) {
+    if(rank != 0) {
+        ostringstream oss;
+        boost::archive::text_oarchive oa(oss);
+        oa << stats;
+        string serialized_stats = oss.str();
+        size_t total = serialized_stats.size() + 1;
+        if(total > numeric_limits<int>::max()) {
+            cerr << "Stats size overflow!" << endl;
+            exit(1);
+        }
+        int count = static_cast<int>(total);
+        MPI_Send(&serialized_stats[0], count, MPI_CHAR, 0, flag, MPI_COMM_WORLD);
+    } else {
+        for(int i{1}; i<world_size; i++) {
+            MPI_Status status;
+            MPI_Probe(i, flag, MPI_COMM_WORLD, &status);
+            int serialized_size;
+            MPI_Get_count(&status, MPI_CHAR, &serialized_size);
+            char serialized_data[serialized_size];
+            MPI_Recv(&serialized_data, serialized_size, MPI_CHAR, i, flag, MPI_COMM_WORLD, &status);
+
+            istringstream iss(serialized_data);
+            boost::archive::text_iarchive ia(iss);
+
+            Stats received_stats;
+            ia >> received_stats;
+
+            func(stats, received_stats);
+        }
+    }
+}
 
 int main(int argc, char* argv[]) {
 
     // Get access to MPI service
     MPI_Init(&argc, &argv);
 
+    double start = MPI_Wtime();
+
     int world_size, my_rank;
     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
     MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
 
-    string twitter_path = "D:/2023 S1/COMP90024_Cluster_and_Cloud_Computing/Assignment_1/data/smallTwitter.json";
-    string suburb_path = "D:/2023 S1/COMP90024_Cluster_and_Cloud_Computing/Assignment_1/data/sal.json";
+    const char* twt_path = argv[1];
+    const char* sal_path = argv[2];
 
-    // open and save sal.json as a json object
-    FILE* fp = fopen(suburb_path.c_str(), "rb");
-    if(!fp) {
-        cerr << "Error: failed to open the file " + suburb_path << endl;
-        return 1;
-    }
-    char read_buffer[65536];
-    FileReadStream is(fp, read_buffer, sizeof(read_buffer));
-    Document suburbs;
-    suburbs.ParseStream(is);
-    fclose(fp);
+    Document suburbs = get_suburbs(sal_path);
 
-    // Open the twitter file
-    ifstream twitter_file(twitter_path);
-    if(!twitter_file.is_open()) {
-        cerr << "Error: failed to open the file " + twitter_path << endl;
-        return 1;
-    }
+    long long file_size;
+    long long start_pos = get_start_pos(twt_path, file_size, world_size, my_rank);
+    long long chunk_size = get_chunk_size(start_pos, file_size, world_size, my_rank);
 
-    // Get the size of input file
-    twitter_file.seekg(0, ios::end);
-    long long file_size = twitter_file.tellg();
+    CityStats city_stats{{"1gsyd", 0}, {"2gmel", 0}, {"3gbri", 0},
+                         {"4gade", 0}, {"5gper", 0}, {"6ghob", 0},
+                         {"7gdar", 0}, {"8acte", 0}, {"9oter", 0}};
+    UserStats user_stats;
+    DataHandler data_handler(&city_stats, &user_stats, &suburbs);
 
-    // Calculate the chunk size
-    long long chunk_size = file_size / world_size;
+    file_stats(twt_path, chunk_size, start_pos, data_handler);
 
-    // Split the json file at valid boundary
-    // Identify the start position (close)
-    long long start_pos = chunk_size * my_rank;
-
-    twitter_file.seekg(start_pos);
-    char content[1024];
-    while(twitter_file.getline(content, 1024)) {
-        if(strcmp(content, JSON_OBJECT_START) == 0) break;
-    }
-    start_pos = twitter_file.tellg();
-    start_pos -= JSON_HEADER_LENGTH + 1;
-
-    // Identify the end position (open)
-    long long end_pos = file_size;
-    if(world_size > 1) {
-        if(my_rank > 0) {
-            MPI_Send(&start_pos, 1, MPI_INT, my_rank-1, 0, MPI_COMM_WORLD);
-        }
-        if(my_rank < world_size-1) {
-            MPI_Recv(&end_pos, 1, MPI_INT, my_rank+1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        }
-    }
-    twitter_file.close();
-
-    // Initialize the parser
-    FILE* tw = fopen(twitter_path.c_str(), "rb");
-    fseek(tw, start_pos, SEEK_SET);
-    char buffer[65536];
-    FileReadStream isr(tw, buffer, sizeof(buffer));
-    buffer[0] = '[';
-    Reader json_reader;
-    DataHandler data_handler(&suburbs);
-    json_reader.IterativeParseInit();
-    long long total = end_pos - start_pos;
-
-    // Parse the file stream token by token
-    while(isr.Tell() < total - 10) {
-        json_reader.IterativeParseNext<kParseDefaultFlags>(isr, data_handler);
-    }
-    fclose(tw);
-
-    CityStats city_stats(std::move(data_handler.city_stats_));
-    UserStats user_stats(std::move(data_handler.user_stats_));
-
-    double start = MPI_Wtime();
-    // Concat the stats results
-    if(my_rank != 0) {
-        // Set up archive
-        ostringstream oss;
-        boost::archive::text_oarchive oa(oss);
-
-        // Send city stats to rank 0 process
-        oa << city_stats;
-        string serialized_city_stats = oss.str();
-        MPI_Send(&serialized_city_stats[0], serialized_city_stats.size() + 1, MPI_CHAR, 0, 1, MPI_COMM_WORLD);
-
-    } else {
-        for(int i{1}; i<world_size; i++) {
-
-            // Receive city stats from rank i process
-            MPI_Status status;
-            MPI_Probe(i, 1, MPI_COMM_WORLD, &status);
-            int serialized_size;
-            MPI_Get_count(&status, MPI_CHAR, &serialized_size);
-            char serialized_city_data[serialized_size];
-            MPI_Recv(&serialized_city_data, serialized_size, MPI_CHAR, i, 1, MPI_COMM_WORLD, &status);
-
-            // Set up inverse archive for city stats
-            istringstream iss_city(serialized_city_data);
-            boost::archive::text_iarchive ia_city(iss_city);
-
-            // inversely translate city stats from rank i node
-            CityStats received_city_map;
-            ia_city >> received_city_map;
-
-            // Concat city stats map
-            for(auto& e : received_city_map) {
-                city_stats[e.first] += e.second;
+    auto merge_city = [](CityStats& des, CityStats& ori) {
+        for(const auto& e : ori) des[e.first] += e.second;
+    };
+    auto merge_user = [](UserStats& des, UserStats& ori) {
+        for(const auto& e : ori) {
+            for (const auto& p : e.second) {
+                des[e.first][p.first] += p.second;
             }
         }
-    }
+    };
 
-    if(my_rank != 0) {
-        // Set up archive
-        ostringstream oss;
-        boost::archive::text_oarchive oa(oss);
-
-        // Send user stats to rank 0 process
-        oa << user_stats;
-        string serialized_user_stats = oss.str();
-        MPI_Send(&serialized_user_stats[0], serialized_user_stats.size() + 1, MPI_CHAR, 0, 2, MPI_COMM_WORLD);
-
-    } else {
-        for(int i{1}; i<world_size; i++) {
-
-            // Receive user stats from rank i process
-            MPI_Status status;
-            MPI_Probe(i, 2, MPI_COMM_WORLD, &status);
-            int serialized_size;
-            MPI_Get_count(&status, MPI_CHAR, &serialized_size);
-            char serialized_user_data[serialized_size];
-            MPI_Recv(&serialized_user_data, serialized_size, MPI_CHAR, i, 2, MPI_COMM_WORLD, &status);
-
-            // Set up inverse archive for user stats
-            istringstream iss_user(serialized_user_data);
-            boost::archive::text_iarchive ia_user(iss_user);
-
-            // inversely translate user stats from rank i node
-            UserStats received_user_map;
-            ia_user >> received_user_map;
-
-            // Concat user stats map
-            for(auto& e : received_user_map) {
-                for(auto& p : e.second) {
-                    user_stats[e.first][p.first] += p.second;
-                }
-            }
-        }
-    }
+    merge_stats(city_stats, world_size, my_rank, 1, merge_city);
+    merge_stats(user_stats, world_size, my_rank, 2, merge_user);
 
     // Prompt the output
     if(my_rank == 0) {
@@ -286,8 +246,11 @@ int main(int argc, char* argv[]) {
             cout << boost::format("#%1%%|10t|%2%%|35t|%3%") % i % user_count[i].first % (user_count[i].second.size()-1);
             cout << boost::format("(#%1% tweets - ") % user_count[i].second["count"];
             vector<pair<string, int>> city_count(user_count[i].second.begin(), user_count[i].second.end());
-            sort(city_count.rbegin(), city_count.rend(),
-                 [](auto const &a, auto const &b) {return a.second < b.second;});
+            sort(city_count.rbegin(), city_count.rend(), [](auto const &a, auto const &b) {
+                if (a.second < b.second) return true;
+                if (a.second == b.second) return a.first > b.first;
+                return false;
+            });
             ostringstream oss;
             for(auto& city : city_count) {
                 if(city.first != "count") oss << city.second << city.first.substr(1) << ", ";
@@ -299,7 +262,9 @@ int main(int argc, char* argv[]) {
 
     double end = MPI_Wtime();
 
-    if(my_rank == 0) cout << end - start << endl;
+    if(my_rank == 0) {
+        cout << end - start << endl;
+    }
 
     // Close MPI service
     MPI_Finalize();
