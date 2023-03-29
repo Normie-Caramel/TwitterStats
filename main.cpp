@@ -1,6 +1,7 @@
 #include <fstream>
 #include <iostream>
 #include <unordered_map>
+#include <set>
 #include <map>
 #include <string>
 #include <vector>
@@ -26,6 +27,8 @@ typedef unordered_map<string, string> Suburbs;
 typedef map<string, int> CityStats;
 typedef unordered_map<string, unordered_map<string, int>> UserStats;
 
+const set<string> GCC {"1gsyd", "2gmel", "3gbri", "4gade", "5gper", "6ghob", "7gdar", "8acte", "9oter"};
+
 struct DataHandler : public BaseReaderHandler<UTF8<>, DataHandler> {
 
     DataHandler(CityStats& city_stats, UserStats& user_stats, Suburbs& suburbs):
@@ -39,10 +42,9 @@ struct DataHandler : public BaseReaderHandler<UTF8<>, DataHandler> {
                 boost::algorithm::to_lower(city);
                 if(suburbs_.find(city) != suburbs_.end()) {
                     auto index = suburbs_[city];
-                    if(city_stats_.find(index) != city_stats_.end()){
-                        city_stats_[index] += 1;
-                        user_stats_[curr_user_][index] += 1;
-                    }
+                    city_stats_[index] += 1;
+                    user_stats_[curr_user_]["gcc_count"] += 1;
+                    user_stats_[curr_user_][index] += 1;
                 }
                 break;
             }
@@ -89,7 +91,8 @@ inline Suburbs get_suburbs(const char* path) {
     document.ParseStream(is);
     Suburbs suburbs;
     for (auto& e : document.GetObject()) {
-        suburbs[e.name.GetString()] = e.value.GetObject()["gcc"].GetString();
+        string value = e.value.GetObject()["gcc"].GetString();
+        if(GCC.find(value) != GCC.end()) suburbs[e.name.GetString()] = value;
     }
     fclose(fp);
     return suburbs;
@@ -192,10 +195,9 @@ int main(int argc, char* argv[]) {
     long long start_pos = get_start_pos(twt_path, file_size, world_size, my_rank);
     long long chunk_size = get_chunk_size(start_pos, file_size, world_size, my_rank);
 
-    CityStats city_stats{{"1gsyd", 0}, {"2gmel", 0}, {"3gbri", 0},
-                         {"4gade", 0}, {"5gper", 0}, {"6ghob", 0},
-                         {"7gdar", 0}, {"8acte", 0}, {"9oter", 0}};
+    CityStats city_stats;
     UserStats user_stats;
+    for(auto& e : GCC) city_stats[e] = 0;
     DataHandler data_handler(city_stats, user_stats, suburbs);
 
     file_stats(twt_path, chunk_size, start_pos, data_handler);
@@ -233,31 +235,31 @@ int main(int argc, char* argv[]) {
         cout << boost::format("Rank%|10t|Author Id%|35t|Number of Tweets Made") << endl;
         vector<pair<string, unordered_map<string, int>>> user_count(user_stats.begin(), user_stats.end());
         sort(user_count.rbegin(), user_count.rend(),
-             [](auto const &a, auto const &b) {return a.second.at("count") < b.second.at("count");});
+             [](auto const& a, auto const& b) {return a.second.at("count") < b.second.at("count");});
         for(int i{}; i<10; i++) {
-            cout << boost::format("#%1%%|10t|%2%%|35t|%3%\n") % i % user_count[i].first % user_count[i].second["count"];
+            cout << boost::format("#%1%%|10t|%2%%|35t|%3%\n") % (i+1) % user_count[i].first % user_count[i].second["count"];
         }
         cout << endl;
 
         // print the top 10 users posting tweets in most great capital cities.
         cout << boost::format("Rank%|10t|Author Id%|35t|Number of Unique City Location and #Tweets") << endl;
-        sort(user_count.rbegin(), user_count.rend(), [](auto const &a, auto const &b) {
+        sort(user_count.rbegin(), user_count.rend(), [](auto& a, auto& b) {
             if(a.second.size() < b.second.size()) return true;
-            if(a.second.size() == b.second.size()) return a.second.at("count") < b.second.at("count");
+            if(a.second.size() == b.second.size()) return a.second["gcc_count"] < b.second["gcc_count"];
             return false;
         });
         for(int i{}; i<10; i++) {
-            cout << boost::format("#%1%%|10t|%2%%|35t|%3%") % i % user_count[i].first % (user_count[i].second.size()-1);
-            cout << boost::format("(#%1% tweets - ") % user_count[i].second["count"];
+            cout << boost::format("#%1%%|10t|%2%%|35t|%3%") % (i+1) % user_count[i].first % (user_count[i].second.size()-1);
+            cout << boost::format("(#%1% tweets - ") % user_count[i].second["gcc_count"];
             vector<pair<string, int>> city_count(user_count[i].second.begin(), user_count[i].second.end());
-            sort(city_count.rbegin(), city_count.rend(), [](auto const &a, auto const &b) {
+            sort(city_count.rbegin(), city_count.rend(), [](auto const& a, auto const& b) {
                 if (a.second < b.second) return true;
                 if (a.second == b.second) return a.first > b.first;
                 return false;
             });
             ostringstream oss;
             for(auto& city : city_count) {
-                if(city.first != "count") oss << city.second << city.first.substr(1) << ", ";
+                if(city.first != "count" && city.first != "gcc_count") oss << city.second << city.first.substr(1) << ", ";
             }
             auto output = oss.str();
             cout << output.substr(0, output.size()-2) << ")" << endl;
