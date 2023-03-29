@@ -22,19 +22,14 @@
 using namespace std;
 using namespace rapidjson;
 
+typedef unordered_map<string, string> Suburbs;
 typedef map<string, int> CityStats;
 typedef unordered_map<string, unordered_map<string, int>> UserStats;
 
 struct DataHandler : public BaseReaderHandler<UTF8<>, DataHandler> {
 
-    DataHandler(CityStats* city_stats, UserStats* user_stats, Document* suburbs):
+    DataHandler(CityStats& city_stats, UserStats& user_stats, Suburbs& suburbs):
         city_stats_{city_stats}, user_stats_{user_stats}, suburbs_{suburbs}, state_{kExpectOthers} {}
-
-    ~DataHandler() {
-        suburbs_ = nullptr;
-        user_stats_ = nullptr;
-        city_stats_ = nullptr;
-    }
 
     bool String(const Ch* str, SizeType length, bool copy) {
         switch(state_) {
@@ -42,19 +37,18 @@ struct DataHandler : public BaseReaderHandler<UTF8<>, DataHandler> {
                 string city = string(str, length);
                 city = city.substr(0, city.find(','));
                 boost::algorithm::to_lower(city);
-                auto c_city = city.c_str();
-                if(suburbs_->HasMember(c_city)) {
-                    auto index = (*suburbs_)[c_city].GetObject()["gcc"].GetString();
-                    if(city_stats_->find(index) != city_stats_->end()){
-                        (*city_stats_)[index] += 1;
-                        (*user_stats_)[curr_user_][index] += 1;
+                if(suburbs_.find(city) != suburbs_.end()) {
+                    auto index = suburbs_[city];
+                    if(city_stats_.find(index) != city_stats_.end()){
+                        city_stats_[index] += 1;
+                        user_stats_[curr_user_][index] += 1;
                     }
                 }
                 break;
             }
             case kExpectUserID: {
                 curr_user_ = string(str, length);
-                (*user_stats_)[curr_user_]["count"] += 1;
+                user_stats_[curr_user_]["count"] += 1;
                 break;
             }
             default: {
@@ -77,13 +71,13 @@ struct DataHandler : public BaseReaderHandler<UTF8<>, DataHandler> {
     bool Default() {return true;}
 
     enum State {kExpectUserID, kExpectCityName, kExpectOthers} state_;
-    Document* suburbs_;
-    CityStats* city_stats_;
-    UserStats* user_stats_;
+    Suburbs& suburbs_;
+    CityStats& city_stats_;
+    UserStats& user_stats_;
     string curr_user_;
 };
 
-inline Document get_suburbs(const char* path) {
+inline Suburbs get_suburbs(const char* path) {
     FILE* fp = fopen(path, "rb");
     if(!fp) {
         cerr << "Error: failed to open the file " + string(path) << endl;
@@ -91,8 +85,12 @@ inline Document get_suburbs(const char* path) {
     }
     char buffer[65536];
     FileReadStream is(fp, buffer, sizeof(buffer));
-    Document suburbs;
-    suburbs.ParseStream(is);
+    Document document;
+    document.ParseStream(is);
+    Suburbs suburbs;
+    for (auto& e : document.GetObject()) {
+        suburbs[e.name.GetString()] = e.value.GetObject()["gcc"].GetString();
+    }
     fclose(fp);
     return suburbs;
 }
@@ -188,7 +186,7 @@ int main(int argc, char* argv[]) {
     const char* twt_path = argv[1];
     const char* sal_path = argv[2];
 
-    Document suburbs = get_suburbs(sal_path);
+    auto suburbs = get_suburbs(sal_path);
 
     long long file_size;
     long long start_pos = get_start_pos(twt_path, file_size, world_size, my_rank);
@@ -198,9 +196,15 @@ int main(int argc, char* argv[]) {
                          {"4gade", 0}, {"5gper", 0}, {"6ghob", 0},
                          {"7gdar", 0}, {"8acte", 0}, {"9oter", 0}};
     UserStats user_stats;
-    DataHandler data_handler(&city_stats, &user_stats, &suburbs);
+    DataHandler data_handler(city_stats, user_stats, suburbs);
 
     file_stats(twt_path, chunk_size, start_pos, data_handler);
+
+    double end = MPI_Wtime();
+
+    if(my_rank == 0) {
+        cout << end - start << endl;
+    }
 
     auto merge_city = [](CityStats& des, CityStats& ori) {
         for(const auto& e : ori) des[e.first] += e.second;
@@ -258,12 +262,6 @@ int main(int argc, char* argv[]) {
             auto output = oss.str();
             cout << output.substr(0, output.size()-2) << ")" << endl;
         }
-    }
-
-    double end = MPI_Wtime();
-
-    if(my_rank == 0) {
-        cout << end - start << endl;
     }
 
     // Close MPI service
