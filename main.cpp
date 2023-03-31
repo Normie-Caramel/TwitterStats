@@ -26,6 +26,7 @@ using namespace rapidjson;
 typedef unordered_map<string, string> Suburbs;
 typedef map<string, int> CityStats;
 typedef unordered_map<string, unordered_map<string, int>> UserStats;
+typedef vector<pair<string, unordered_map<string, int>>> UserProfile;
 
 const set<string> GCC {"1gsyd", "2gmel", "3gbri", "4gade", "5gper", "6ghob", "7gdar", "8acte", "9oter"};
 
@@ -175,12 +176,53 @@ inline void merge_stats(Stats& stats, int world_size, int rank, int flag, F func
     }
 }
 
+inline void prompt_gcc_tweet_nums(CityStats& city_stats) {
+    cout << boost::format("Greater Capital City%|35t|Number of Tweets Made") << endl;
+    for(auto e : city_stats) {
+        cout << boost::format("%1%%|35t|%2%\n") % e.first % e.second;
+    }
+    cout << endl;
+}
+
+inline void prompt_usr_most_tweets(UserProfile& user_count) {
+    cout << boost::format("Rank%|10t|Author Id%|35t|Number of Tweets Made") << endl;
+    sort(user_count.rbegin(), user_count.rend(),
+         [](auto const& a, auto const& b) {return a.second.at("count") < b.second.at("count");});
+    for(int i{}; i<10; i++) {
+        cout << boost::format("#%1%%|10t|%2%%|35t|%3%\n") % (i+1) % user_count[i].first % user_count[i].second["count"];
+    }
+    cout << endl;
+}
+
+inline void prompt_usr_most_gcc(UserProfile& user_count) {
+    cout << boost::format("Rank%|10t|Author Id%|35t|Number of Unique City Location and #Tweets") << endl;
+    sort(user_count.rbegin(), user_count.rend(), [](auto& a, auto& b) {
+        if(a.second.size() < b.second.size()) return true;
+        if(a.second.size() == b.second.size()) return a.second["gcc_count"] < b.second["gcc_count"];
+        return false;
+    });
+    for(int i{}; i<10; i++) {
+        cout << boost::format("#%1%%|10t|%2%%|35t|%3%") % (i+1) % user_count[i].first % (user_count[i].second.size()-1);
+        cout << boost::format("(#%1% tweets - ") % user_count[i].second["gcc_count"];
+        vector<pair<string, int>> city_count(user_count[i].second.begin(), user_count[i].second.end());
+        sort(city_count.rbegin(), city_count.rend(), [](auto const& a, auto const& b) {
+            if (a.second < b.second) return true;
+            if (a.second == b.second) return a.first > b.first;
+            return false;
+        });
+        ostringstream oss;
+        for(auto& city : city_count) {
+            if(city.first != "count" && city.first != "gcc_count") oss << city.second << city.first.substr(1) << ", ";
+        }
+        auto output = oss.str();
+        cout << output.substr(0, output.size()-2) << ")" << endl;
+    }
+}
+
 int main(int argc, char* argv[]) {
 
     // Get access to MPI service
     MPI_Init(&argc, &argv);
-
-    double start = MPI_Wtime();
 
     int world_size, my_rank;
     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
@@ -202,12 +244,6 @@ int main(int argc, char* argv[]) {
 
     file_stats(twt_path, chunk_size, start_pos, data_handler);
 
-    double end = MPI_Wtime();
-
-    if(my_rank == 0) {
-        cout << end - start << endl;
-    }
-
     auto merge_city = [](CityStats& des, CityStats& ori) {
         for(const auto& e : ori) des[e.first] += e.second;
     };
@@ -224,46 +260,10 @@ int main(int argc, char* argv[]) {
 
     // Prompt the output
     if(my_rank == 0) {
-        // print the great capital cities sorted by tweets posted
-        cout << boost::format("Greater Capital City%|35t|Number of Tweets Made") << endl;
-        for(auto e : city_stats) {
-            cout << boost::format("%1%%|35t|%2%\n") % e.first % e.second;
-        }
-        cout << endl;
-
-        // print the top 10 users posting the most tweets in great capital cities.
-        cout << boost::format("Rank%|10t|Author Id%|35t|Number of Tweets Made") << endl;
-        vector<pair<string, unordered_map<string, int>>> user_count(user_stats.begin(), user_stats.end());
-        sort(user_count.rbegin(), user_count.rend(),
-             [](auto const& a, auto const& b) {return a.second.at("count") < b.second.at("count");});
-        for(int i{}; i<10; i++) {
-            cout << boost::format("#%1%%|10t|%2%%|35t|%3%\n") % (i+1) % user_count[i].first % user_count[i].second["count"];
-        }
-        cout << endl;
-
-        // print the top 10 users posting tweets in most great capital cities.
-        cout << boost::format("Rank%|10t|Author Id%|35t|Number of Unique City Location and #Tweets") << endl;
-        sort(user_count.rbegin(), user_count.rend(), [](auto& a, auto& b) {
-            if(a.second.size() < b.second.size()) return true;
-            if(a.second.size() == b.second.size()) return a.second["gcc_count"] < b.second["gcc_count"];
-            return false;
-        });
-        for(int i{}; i<10; i++) {
-            cout << boost::format("#%1%%|10t|%2%%|35t|%3%") % (i+1) % user_count[i].first % (user_count[i].second.size()-1);
-            cout << boost::format("(#%1% tweets - ") % user_count[i].second["gcc_count"];
-            vector<pair<string, int>> city_count(user_count[i].second.begin(), user_count[i].second.end());
-            sort(city_count.rbegin(), city_count.rend(), [](auto const& a, auto const& b) {
-                if (a.second < b.second) return true;
-                if (a.second == b.second) return a.first > b.first;
-                return false;
-            });
-            ostringstream oss;
-            for(auto& city : city_count) {
-                if(city.first != "count" && city.first != "gcc_count") oss << city.second << city.first.substr(1) << ", ";
-            }
-            auto output = oss.str();
-            cout << output.substr(0, output.size()-2) << ")" << endl;
-        }
+        UserProfile user_count(user_stats.begin(), user_stats.end());
+        prompt_gcc_tweet_nums(city_stats);
+        prompt_usr_most_tweets(user_count);
+        prompt_usr_most_gcc(user_count);
     }
 
     // Close MPI service
