@@ -38,7 +38,7 @@ struct DataHandler : public BaseReaderHandler<UTF8<>, DataHandler> {
     bool String(const Ch* str, SizeType length, bool copy) {
         switch(state_) {
             case kExpectCityName: {
-                string city = string(str, length);
+                string city{str, length};
                 city = city.substr(0, city.find(','));
                 boost::algorithm::to_lower(city);
                 if(suburbs_.find(city) != suburbs_.end()) {
@@ -71,7 +71,7 @@ struct DataHandler : public BaseReaderHandler<UTF8<>, DataHandler> {
         return true;
     }
 
-    bool Default() {return true;}
+    static bool Default() {return true;}
 
     enum State {kExpectUserID, kExpectCityName, kExpectOthers} state_;
     Suburbs& suburbs_;
@@ -131,13 +131,13 @@ inline long long get_chunk_size(long long start_pos, long long file_size, int wo
 inline void file_stats(const char* path, long long chunk_size, long long start_pos, DataHandler& dh) {
     FILE* twt_file = fopen(path, "rb");
     fseeko64(twt_file, start_pos, SEEK_SET);
-    char buffer[65536];
+    char buffer[1024 * 64];
     FileReadStream isr(twt_file, buffer, sizeof(buffer)); 
     buffer[0] = '[';
     Reader json_reader;
     json_reader.IterativeParseInit();
     while(isr.Tell() < chunk_size) {
-        json_reader.IterativeParseNext<kParseDefaultFlags>(isr, dh);
+        json_reader.IterativeParseNext<kParseIterativeFlag>(isr, dh);
     }
     fclose(twt_file);
 }
