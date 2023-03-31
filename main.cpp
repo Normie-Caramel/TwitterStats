@@ -131,7 +131,7 @@ inline void file_stats(const char* path, long long chunk_size, long long start_p
     FILE* twt_file = fopen(path, "rb");
     fseeko64(twt_file, start_pos, SEEK_SET);
     char buffer[65536];
-    FileReadStream isr(twt_file, buffer, sizeof(buffer));
+    FileReadStream isr(twt_file, buffer, sizeof(buffer)); 
     buffer[0] = '[';
     Reader json_reader;
     json_reader.IterativeParseInit();
