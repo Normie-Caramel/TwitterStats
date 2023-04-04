@@ -51,7 +51,7 @@ build cmake_object_order_depends_target_stats: phony || CMakeFiles/stats.dir
 
 build CMakeFiles/stats.dir/main.cpp.obj: CXX_COMPILER__stats_Debug D$:/2023$ S1/COMP90024_Cluster_and_Cloud_Computing/Assignment_1/stats/main.cpp || cmake_object_order_depends_target_stats
   DEP_FILE = CMakeFiles\stats.dir\main.cpp.obj.d
-  FLAGS = -O2 -g
+  FLAGS = -O3 -g
   INCLUDES = -ID:/C++SDK/boost_1_81_0 -ID:/C++SDK/rapidjson/include -isystem "C:/Program Files (x86)/Microsoft SDKs/MPI/Include"
   OBJECT_DIR = CMakeFiles\stats.dir
   OBJECT_FILE_DIR = CMakeFiles\stats.dir
@@ -65,7 +65,7 @@ build CMakeFiles/stats.dir/main.cpp.obj: CXX_COMPILER__stats_Debug D$:/2023$ S1/
 # Link the executable stats.exe
 
 build stats.exe: CXX_EXECUTABLE_LINKER__stats_Debug CMakeFiles/stats.dir/main.cpp.obj | C$:/Program$ Files$ (x86)/Microsoft$ SDKs/MPI/Lib/x64/msmpi.lib
-  FLAGS = -O2 -g
+  FLAGS = -O3 -g
   LINK_LIBRARIES = -lboost_program_options-mgw8-mt-d-x64-1_81  -lboost_program_options-mgw8-mt-x64-1_81  -lboost_serialization-mgw8-mt-d-x64-1_81  -lboost_serialization-mgw8-mt-x64-1_81  "C:/Program Files (x86)/Microsoft SDKs/MPI/Lib/x64/msmpi.lib"  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32
   LINK_PATH = -LD:/C++SDK/boost_1_81_0/stage/lib
   OBJECT_DIR = CMakeFiles\stats.dir
