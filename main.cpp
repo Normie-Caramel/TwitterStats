@@ -28,11 +28,11 @@ typedef map<string, int> CityStats;
 typedef unordered_map<string, unordered_map<string, int>> UserStats;
 typedef vector<pair<string, unordered_map<string, int>>> UserProfile;
 
-const set<string> GCC {"1gsyd", "2gmel", "3gbri", "4gade", "5gper", "6ghob", "7gdar", "8acte"};
+const set<string> GCC {"1gsyd", "2gmel", "3gbri", "4gade", "5gper", "6ghob", "7gdar", "8acte", "9oter"};
 const unordered_map<string, string> LOC {
         {"1gsyd", "New South Wales"}, {"2gmel", "Victoria"}, {"3gbri", "Queensland"},
         {"4gade", "South Australia"}, {"5gper", "Western Australia"}, {"6ghob", "Tasmania"},
-        {"7gdar", "Northern Territory"}, {"8acte", "Australian Capital Territory"}};
+        {"7gdar", "Northern Territory"}, {"8acte", "Australian Capital Territory"}, {"9oter", ""}};
 
 struct DataHandler : public BaseReaderHandler<UTF8<>, DataHandler> {
 
@@ -64,26 +64,26 @@ struct DataHandler : public BaseReaderHandler<UTF8<>, DataHandler> {
                         }
                     }
                 }
+                state_ = kExpectOthers;
                 break;
             }
             case kExpectUserID: {
                 curr_user_ = string(str, length);
                 user_stats_[curr_user_]["count"] += 1;
+                state_ = kExpectOthers;
                 break;
             }
-            default: {
-                return true;
-            }
         }
-        state_ = kExpectOthers;
         return true;
     }
 
     bool Key(const Ch* str, SizeType length, bool copy) {
-        if(strcmp(str, "author_id") == 0) {
-            state_ = kExpectUserID;
-        } else if (strcmp(str, "full_name") == 0) {
-            state_ = kExpectCityName;
+        if(length == 9) {
+            if (strcmp(str, "author_id") == 0) {
+                state_ = kExpectUserID;
+            } else if (strcmp(str, "full_name") == 0) {
+                state_ = kExpectCityName;
+            }
         }
         return true;
     }
@@ -121,7 +121,6 @@ inline Suburbs get_suburbs(const char* path) {
 }
 
 inline long long get_start_pos(const char* path, long long& file_size, int world_size, int rank) {
-    if(rank == 0) return 0;
     ifstream twt_file(path);
     if(!twt_file.is_open()) {
         cerr << "Error: failed to open the file " + string(path) << endl;
@@ -129,6 +128,7 @@ inline long long get_start_pos(const char* path, long long& file_size, int world
     };
     twt_file.seekg(0, ios::end);
     file_size = twt_file.tellg();
+    if(rank == 0) return 0;
     long long chunk_size = file_size / world_size;
     long long start_pos = chunk_size * rank;
     twt_file.seekg(start_pos, ios::beg);
@@ -200,7 +200,7 @@ inline void merge_stats(Stats& stats, int world_size, int rank, int flag, F func
 
 inline void prompt_gcc_tweet_nums(CityStats& city_stats) {
     cout << boost::format("\nGreater Capital City%|35t|Number of Tweets Made") << endl;
-    for(auto e : city_stats) {
+    for(auto const& e : city_stats) {
         cout << boost::format("%1%%|35t|%2%\n") % e.first % e.second;
     }
     cout << endl;
@@ -226,15 +226,9 @@ inline void prompt_usr_most_gcc(UserProfile& user_count) {
     for(int i{}; i<10; i++) {
         cout << boost::format("#%1%%|10t|%2%%|35t|%3%") % (i+1) % user_count[i].first % (user_count[i].second.size()-2);
         cout << boost::format("(#%1% tweets - ") % user_count[i].second["gcc_count"];
-        vector<pair<string, int>> city_count(user_count[i].second.begin(), user_count[i].second.end());
-        sort(city_count.rbegin(), city_count.rend(), [](auto const& a, auto const& b) {
-            if (a.second < b.second) return true;
-            if (a.second == b.second) return a.first > b.first;
-            return false;
-        });
         ostringstream oss;
-        for(auto& city : city_count) {
-            if(city.first != "count" && city.first != "gcc_count") oss << city.second << city.first.substr(1) << ", ";
+        for(auto& city : GCC) {
+            if(user_count[i].second[city] != 0) oss << user_count[i].second[city] << city.substr(1) << ", ";
         }
         auto output = oss.str();
         cout << output.substr(0, output.size()-2) << ")" << endl;
@@ -263,7 +257,7 @@ int main(int argc, char* argv[]) {
 
     CityStats city_stats;
     UserStats user_stats;
-    for(auto& e : GCC) city_stats[e] = 0;
+    for(auto const& city : GCC) city_stats[city] = 0;
     DataHandler data_handler(city_stats, user_stats, suburbs);
 
     file_stats(twt_path, chunk_size, start_pos, data_handler);
